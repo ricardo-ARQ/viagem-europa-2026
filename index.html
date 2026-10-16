@@ -1667,7 +1667,10 @@ button.active, button.is-active, button.selected, button.is-selected, button[ari
         <input type="text" id="modal-item-name" class="form-input" placeholder="Ex: Almoço em Paris">
       </div>
       <div class="form-group">
-        <label class="form-label">Categoria</label>
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+          <label class="form-label" style="margin-bottom:0;">Categoria</label>
+          <button type="button" onclick="promptNewCategory(true)" style="background:none; border:none; color:#3B82F6; font-size:12px; font-weight:600; cursor:pointer; padding:0;">+ Nova categoria</button>
+        </div>
         <select id="modal-item-cat" class="form-select"></select>
       </div>
       <div class="form-group">
@@ -1701,7 +1704,55 @@ button.active, button.is-active, button.selected, button.is-selected, button[ari
       'Todas': '#3B82F6'
     };
 
-    const CATEGORIES = ['Alimento', 'Roupa', 'Hospedagem', 'Eletrônicos', 'Uber', 'Utilitário', 'Metrô', 'Outros'];
+    const BASE_CATEGORIES = ['Alimento', 'Eletrônicos', 'Hospedagem', 'Metrô', 'Roupa', 'Uber', 'Utilitário', 'Outros'];
+    let CATEGORIES = [...BASE_CATEGORIES];
+    const EXTRA_COLORS = ['#14B8A6', '#F97316', '#A855F7', '#84CC16', '#06B6D4', '#E11D48', '#CA8A04', '#7C3AED', '#0891B2', '#DB2777'];
+    const savedCustomCats = JSON.parse(localStorage.getItem('custom_categories_2026') || '[]');
+    const sessionCategories = [...savedCustomCats];
+
+    function colorFor(cat) {
+      if (PALETTE[cat]) return PALETTE[cat];
+      let h = 0;
+      for (const ch of String(cat)) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+      return EXTRA_COLORS[h % EXTRA_COLORS.length];
+    }
+
+    // Categorias em ordem alfabética (pt-BR), com "Outros" sempre por último
+    function refreshCategories() {
+      const unique = new Map();
+      [...BASE_CATEGORIES, ...state.items.map(i => i.cat), ...sessionCategories].forEach(c => {
+        const clean = (c || '').trim();
+        if (!clean) return;
+        const key = clean.toLocaleLowerCase('pt-BR');
+        if (key === 'todas') return;
+        if (!unique.has(key)) unique.set(key, clean);
+      });
+      unique.delete('outros');
+      const sorted = Array.from(unique.values()).sort((a, b) =>
+        a.localeCompare(b, 'pt-BR', { sensitivity: 'base' })
+      );
+      sorted.push('Outros');
+      CATEGORIES = sorted;
+    }
+
+    function promptNewCategory(fromModal = false) {
+      const raw = prompt('Nome da nova categoria:');
+      if (!raw) return;
+      const name = raw.trim();
+      if (!name) return;
+      if (!sessionCategories.some(c => c.toLocaleLowerCase('pt-BR') === name.toLocaleLowerCase('pt-BR'))) {
+        sessionCategories.push(name);
+        localStorage.setItem('custom_categories_2026', JSON.stringify(sessionCategories));
+      }
+      refreshCategories();
+      const canonical = CATEGORIES.find(c => c.toLocaleLowerCase('pt-BR') === name.toLocaleLowerCase('pt-BR')) || name;
+      if (fromModal) {
+        populateModalCategories(canonical);
+      } else {
+        state.selected_category = canonical;
+        updateViz();
+      }
+    }
 
     // Initial Data
     const INITIAL_ITEMS = [
@@ -1858,9 +1909,12 @@ button.active, button.is-active, button.selected, button.is-selected, button[ari
     }
 
     // Modal Operations
-    function populateModalCategories() {
+    function populateModalCategories(selectedVal) {
+      refreshCategories();
       const sel = document.getElementById('modal-item-cat');
-      if (sel) sel.innerHTML = CATEGORIES.map(c => `<option value="${c}">${c}</option>`).join('');
+      if (!sel) return;
+      sel.innerHTML = CATEGORIES.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+      if (selectedVal) sel.value = selectedVal;
     }
 
     function openAddModal() {
@@ -1870,7 +1924,8 @@ button.active, button.is-active, button.selected, button.is-selected, button[ari
       document.getElementById('modal-item-day').value = 1;
       document.getElementById('modal-item-eur').value = '';
       document.getElementById('modal-delete-btn').style.display = 'none';
-      populateModalCategories();
+      const defaultCat = state.selected_category !== 'Todas' ? state.selected_category : CATEGORIES[0];
+      populateModalCategories(defaultCat);
       document.getElementById('item-modal').classList.add('is-open');
     }
 
@@ -1882,8 +1937,7 @@ button.active, button.is-active, button.selected, button.is-selected, button[ari
       document.getElementById('modal-item-name').value = item.item;
       document.getElementById('modal-item-day').value = item.day;
       document.getElementById('modal-item-eur').value = item.eur;
-      populateModalCategories();
-      document.getElementById('modal-item-cat').value = item.cat;
+      populateModalCategories(item.cat);
       document.getElementById('modal-delete-btn').style.display = 'inline-block';
       document.getElementById('item-modal').classList.add('is-open');
     }
@@ -1953,6 +2007,8 @@ button.active, button.is-active, button.selected, button.is-selected, button[ari
       const textDim = isDark ? 'rgba(255,255,255,0.55)' : 'rgba(0,0,0,0.55)';
       const gridColor = isDark ? '#2d2f38' : '#e3e3e3';
 
+      refreshCategories();
+
       // 1. Calculate Aggregates
       const totalGeneralEur = state.items.reduce((sum, item) => sum + item.eur, 0);
       document.getElementById('total-geral-val').textContent = formatCurrency(totalGeneralEur);
@@ -1988,17 +2044,21 @@ button.active, button.is-active, button.selected, button.is-selected, button[ari
       if (chipsContainer) chipsContainer.innerHTML = allFilterCategories.map(cat => {
         const isActive = state.selected_category === cat;
         const isDimmed = state.selected_category !== 'Todas' && !isActive;
-        const color = PALETTE[cat] || '#3B82F6';
+        const color = colorFor(cat);
         
         return `
           <button class="cat-chip ${isActive ? 'is-active' : ''} ${isDimmed ? 'is-dimmed' : ''}" 
                   style="color: ${isActive ? color : getCssVar('--on-surface')};"
-                  onclick="selectCategory('${cat}')">
+                  onclick="selectCategory(decodeURIComponent('${encodeURIComponent(cat).replace(/'/g, '%27')}'))">
             <span class="cat-chip-dot" style="background-color: ${color};"></span>
-            <span>${cat}</span>
+            <span>${escapeHtml(cat)}</span>
           </button>
         `;
-      }).join('');
+      }).join('') + `
+        <button class="cat-chip" style="border-style: dashed; opacity: 0.85;" onclick="promptNewCategory(false)" title="Adicionar nova categoria">
+          <span>+ Nova</span>
+        </button>
+      `;
 
       // 3. Render Donut Chart (Chart.js)
       renderDonutChart(categoryTotals, totalGeneralEur, isDark, textColor, gridColor);
@@ -2017,7 +2077,7 @@ button.active, button.is-active, button.selected, button.is-selected, button[ari
       
       // Calculate background colors with opacity attenuation
       const sliceColors = CATEGORIES.map(cat => {
-        const baseColor = PALETTE[cat];
+        const baseColor = colorFor(cat);
         if (state.selected_category === 'Todas' || state.selected_category === cat) {
           return baseColor;
         }
@@ -2031,6 +2091,7 @@ button.active, button.is-active, button.selected, button.is-selected, button[ari
       });
 
       if (donutChartInstance) {
+        donutChartInstance.data.labels = [...CATEGORIES];
         donutChartInstance.data.datasets[0].data = sliceData;
         donutChartInstance.data.datasets[0].backgroundColor = sliceColors;
         donutChartInstance.update('none');
@@ -2100,7 +2161,7 @@ button.active, button.is-active, button.selected, button.is-selected, button[ari
       // Highlight colors
       const barColors = days.map(d => {
         const isSelected = state.selected_day === d;
-        const base = state.selected_category === 'Todas' ? PALETTE['Todas'] : PALETTE[state.selected_category];
+        const base = state.selected_category === 'Todas' ? PALETTE['Todas'] : colorFor(state.selected_category);
         if (state.selected_day !== null && !isSelected) {
           return (typeof base === 'number' ? Math.round(base * 100) / 100 : base) + '40'; // dimmed
         }
@@ -2203,7 +2264,7 @@ button.active, button.is-active, button.selected, button.is-selected, button[ari
       }
 
       if (container) container.innerHTML = filtered.map(item => {
-        const catColor = PALETTE[item.cat] || '#64748B';
+        const catColor = colorFor(item.cat);
         const primaryVal = formatCurrency(item.eur);
         const secondaryVal = state.currency === 'EUR' 
           ? `R$ ${formatNumber(item.eur * state.exchange_rate)}`
@@ -2218,7 +2279,7 @@ button.active, button.is-active, button.selected, button.is-selected, button[ari
                 <span class="item-sub">
                   <span>${item.date}</span>
                   <span>•</span>
-                  <span>${item.cat}</span>
+                  <span>${escapeHtml(item.cat)}</span>
                 </span>
               </div>
             </div>
