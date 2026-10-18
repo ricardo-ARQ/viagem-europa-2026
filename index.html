@@ -1718,7 +1718,10 @@ button.active, button.is-active, button.selected, button.is-selected, button[ari
       <div class="form-group">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
           <label class="form-label" style="margin-bottom:0;">Categoria</label>
-          <button type="button" onclick="promptNewCategory(true)" style="background:none; border:none; color:#3B82F6; font-size:12px; font-weight:600; cursor:pointer; padding:0;">+ Nova categoria</button>
+          <div style="display:flex; gap:10px; align-items:center;">
+            <button type="button" onclick="promptNewCategory(true)" style="background:none; border:none; color:#3B82F6; font-size:12px; font-weight:600; cursor:pointer; padding:0;">+ Nova</button>
+            <button type="button" onclick="deleteCategory(document.getElementById('modal-item-cat').value, true)" style="background:none; border:none; color:#EF4444; font-size:12px; font-weight:600; cursor:pointer; padding:0;" title="Excluir a categoria selecionada">🗑️ Excluir</button>
+          </div>
         </div>
         <select id="modal-item-cat" class="form-select"></select>
       </div>
@@ -1758,6 +1761,7 @@ button.active, button.is-active, button.selected, button.is-selected, button[ari
     const EXTRA_COLORS = ['#14B8A6', '#F97316', '#A855F7', '#84CC16', '#06B6D4', '#E11D48', '#CA8A04', '#7C3AED', '#0891B2', '#DB2777'];
     const savedCustomCats = JSON.parse(localStorage.getItem('custom_categories_2026') || '[]');
     const sessionCategories = [...savedCustomCats];
+    const deletedCategories = JSON.parse(localStorage.getItem('deleted_categories_2026') || '[]');
 
     function colorFor(cat) {
       if (PALETTE[cat]) return PALETTE[cat];
@@ -1768,12 +1772,18 @@ button.active, button.is-active, button.selected, button.is-selected, button[ari
 
     // Categorias em ordem alfabética (pt-BR), com "Outros" sempre por último
     function refreshCategories() {
+      const deletedKeys = new Set(deletedCategories.map(c => (c || '').toLocaleLowerCase('pt-BR')));
       const unique = new Map();
+      // Se uma categoria tem despesas ativas no banco, ela aparece mesmo se tiver sido ocultada antes
+      state.items.forEach(i => {
+        const clean = (i.cat || '').trim();
+        if (clean) deletedKeys.delete(clean.toLocaleLowerCase('pt-BR'));
+      });
       [...BASE_CATEGORIES, ...state.items.map(i => i.cat), ...sessionCategories].forEach(c => {
         const clean = (c || '').trim();
         if (!clean) return;
         const key = clean.toLocaleLowerCase('pt-BR');
-        if (key === 'todas') return;
+        if (key === 'todas' || deletedKeys.has(key)) return;
         if (!unique.has(key)) unique.set(key, clean);
       });
       unique.delete('outros');
@@ -1789,18 +1799,75 @@ button.active, button.is-active, button.selected, button.is-selected, button[ari
       if (!raw) return;
       const name = raw.trim();
       if (!name) return;
-      if (!sessionCategories.some(c => c.toLocaleLowerCase('pt-BR') === name.toLocaleLowerCase('pt-BR'))) {
+      const key = name.toLocaleLowerCase('pt-BR');
+      const delIdx = deletedCategories.findIndex(c => (c || '').toLocaleLowerCase('pt-BR') === key);
+      if (delIdx !== -1) {
+        deletedCategories.splice(delIdx, 1);
+        localStorage.setItem('deleted_categories_2026', JSON.stringify(deletedCategories));
+      }
+      if (!sessionCategories.some(c => c.toLocaleLowerCase('pt-BR') === key)) {
         sessionCategories.push(name);
         localStorage.setItem('custom_categories_2026', JSON.stringify(sessionCategories));
       }
       refreshCategories();
-      const canonical = CATEGORIES.find(c => c.toLocaleLowerCase('pt-BR') === name.toLocaleLowerCase('pt-BR')) || name;
+      const canonical = CATEGORIES.find(c => c.toLocaleLowerCase('pt-BR') === key) || name;
       if (fromModal) {
         populateModalCategories(canonical);
       } else {
         state.selected_category = canonical;
         updateViz();
       }
+    }
+
+    async function deleteCategory(cat, fromModal = false) {
+      const clean = (cat || '').trim();
+      if (!clean) return;
+      const key = clean.toLocaleLowerCase('pt-BR');
+      if (key === 'todas' || key === 'outros') {
+        alert('A categoria "' + clean + '" é padrão do sistema e não pode ser excluída.');
+        return;
+      }
+      const affected = state.items.filter(i => (i.cat || '').toLocaleLowerCase('pt-BR') === key);
+      const msg = affected.length > 0
+        ? `Excluir a categoria "${clean}"?\n\nAs ${affected.length} despesa(s) desta categoria serão movidas automaticamente para "Outros" na nuvem.`
+        : `Excluir a categoria "${clean}"?`;
+      if (!confirm(msg)) return;
+
+      // Remove das categorias criadas localmente e marca como excluída se for categoria base
+      const sIdx = sessionCategories.findIndex(c => (c || '').toLocaleLowerCase('pt-BR') === key);
+      if (sIdx !== -1) {
+        sessionCategories.splice(sIdx, 1);
+        localStorage.setItem('custom_categories_2026', JSON.stringify(sessionCategories));
+      }
+      if (!deletedCategories.some(c => (c || '').toLocaleLowerCase('pt-BR') === key)) {
+        deletedCategories.push(clean);
+        localStorage.setItem('deleted_categories_2026', JSON.stringify(deletedCategories));
+      }
+
+      // Atualiza no Supabase todas as despesas dessa categoria para "Outros"
+      if (affected.length > 0) {
+        if (db) {
+          setCloudStatus('syncing', '☁️ Atualizando nuvem...');
+          const { error } = await db.from('despesas').update({ cat: 'Outros' }).eq('cat', clean);
+          if (error) {
+            setCloudStatus('error', '⚠️ Erro ao sincronizar');
+            alert('Erro ao atualizar despesas no Supabase: ' + error.message);
+            return;
+          }
+          await loadItems(false);
+        } else {
+          affected.forEach(i => { i.cat = 'Outros'; });
+        }
+      }
+
+      if (state.selected_category.toLocaleLowerCase('pt-BR') === key) {
+        state.selected_category = 'Todas';
+      }
+      refreshCategories();
+      if (fromModal) {
+        populateModalCategories('Outros');
+      }
+      updateViz();
     }
 
     // Initial Data
@@ -2117,13 +2184,16 @@ button.active, button.is-active, button.selected, button.is-selected, button[ari
         const isActive = state.selected_category === cat;
         const isDimmed = state.selected_category !== 'Todas' && !isActive;
         const color = colorFor(cat);
+        const enc = encodeURIComponent(cat).replace(/'/g, '%27');
+        const canDelete = isActive && cat !== 'Todas' && cat !== 'Outros';
         
         return `
           <button class="cat-chip ${isActive ? 'is-active' : ''} ${isDimmed ? 'is-dimmed' : ''}" 
                   style="color: ${isActive ? color : getCssVar('--on-surface')};"
-                  onclick="selectCategory(decodeURIComponent('${encodeURIComponent(cat).replace(/'/g, '%27')}'))">
+                  onclick="selectCategory(decodeURIComponent('${enc}'))">
             <span class="cat-chip-dot" style="background-color: ${color};"></span>
             <span>${escapeHtml(cat)}</span>
+            ${canDelete ? `<span onclick="event.stopPropagation(); deleteCategory(decodeURIComponent('${enc}'), false)" title="Excluir categoria ${escapeHtml(cat)}" style="margin-left:4px; font-weight:700; opacity:0.75; padding:0 2px;">&times;</span>` : ''}
           </button>
         `;
       }).join('') + `
