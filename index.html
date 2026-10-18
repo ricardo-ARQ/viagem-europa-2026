@@ -986,6 +986,13 @@ button.active, button.is-active, button.selected, button.is-selected, button[ari
       flex: 1 1 auto;
     }
 
+    .header-title-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
     .header-title {
       margin: 0;
       font-size: 18px;
@@ -994,6 +1001,42 @@ button.active, button.is-active, button.selected, button.is-selected, button[ari
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+    }
+
+    .cloud-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: rgba(16, 185, 129, 0.12);
+      color: #10B981;
+      border: 1px solid rgba(16, 185, 129, 0.28);
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+      transition: all 0.2s ease;
+    }
+    .cloud-badge:hover {
+      background: rgba(16, 185, 129, 0.2);
+    }
+    .cloud-badge.is-syncing {
+      background: rgba(59, 130, 246, 0.12);
+      color: #3B82F6;
+      border-color: rgba(59, 130, 246, 0.28);
+    }
+    .cloud-badge.is-error {
+      background: rgba(239, 68, 68, 0.12);
+      color: #EF4444;
+      border-color: rgba(239, 68, 68, 0.28);
+    }
+    .cloud-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
     }
 
     .header-subtitle {
@@ -1573,7 +1616,13 @@ button.active, button.is-active, button.selected, button.is-selected, button[ari
       <!-- Top Header Bar -->
       <div class="header-bar">
         <div class="header-title-group">
-          <h1 class="header-title">Despesas de Viagem</h1>
+          <div class="header-title-row">
+            <h1 class="header-title">Despesas de Viagem</h1>
+            <span class="cloud-badge is-syncing" id="cloud-status-badge" onclick="loadItems(true)" title="Clique para sincronizar agora">
+              <span class="cloud-dot"></span>
+              <span id="cloud-status-text">☁️ Conectando à nuvem...</span>
+            </span>
+          </div>
           <div class="header-subtitle">Europa 2026</div>
         </div>
         <div class="header-actions">
@@ -1946,12 +1995,30 @@ button.active, button.is-active, button.selected, button.is-selected, button[ari
       document.getElementById('item-modal').classList.remove('is-open');
     }
 
+    function setCloudStatus(mode, msg) {
+      const badge = document.getElementById('cloud-status-badge');
+      const txt = document.getElementById('cloud-status-text');
+      if (!badge || !txt) return;
+      badge.classList.remove('is-syncing', 'is-error');
+      if (mode === 'syncing') badge.classList.add('is-syncing');
+      if (mode === 'error') badge.classList.add('is-error');
+      txt.textContent = msg;
+    }
+
     async function deleteCurrentItem() {
       if (state.editing_item_id !== null) {
         if (!confirm('Excluir esta despesa?')) return;
         if (db) {
+          setCloudStatus('syncing', '☁️ Salvando na nuvem...');
           const { error } = await db.from('despesas').delete().eq('id', state.editing_item_id);
-          if (error) { alert('Erro ao excluir: ' + error.message); return; }
+          if (error) {
+            setCloudStatus('error', '⚠️ Erro ao sincronizar');
+            alert('Erro ao excluir: ' + error.message);
+            return;
+          }
+          closeModal();
+          await loadItems();
+          return;
         }
         state.items = state.items.filter(i => i.id !== state.editing_item_id);
         closeModal();
@@ -1966,11 +2033,16 @@ button.active, button.is-active, button.selected, button.is-selected, button[ari
       const eur = parseFloat(document.getElementById('modal-item-eur').value) || 0;
 
       if (db) {
+        setCloudStatus('syncing', '☁️ Salvando na nuvem...');
         const row = { item: name, cat, day, eur };
         const res = state.editing_item_id !== null
           ? await db.from('despesas').update(row).eq('id', state.editing_item_id)
           : await db.from('despesas').insert(row);
-        if (res.error) { alert('Erro ao salvar: ' + res.error.message); return; }
+        if (res.error) {
+          setCloudStatus('error', '⚠️ Erro ao sincronizar');
+          alert('Erro ao salvar: ' + res.error.message);
+          return;
+        }
         closeModal();
         await loadItems();
         return;
@@ -2293,21 +2365,39 @@ button.active, button.is-active, button.selected, button.is-selected, button[ari
     }
 
     // Auto-Resize & Theme Message Listener Setup
-    async function loadItems() {
-      if (!db) return;
+    async function loadItems(showIndicator = false) {
+      if (!db) {
+        setCloudStatus('error', '⚠️ Modo offline');
+        return;
+      }
+      if (showIndicator) setCloudStatus('syncing', '☁️ Sincronizando...');
       const { data, error } = await db.from('despesas').select('*').order('eur', { ascending: false });
-      if (error) { alert('Erro ao carregar despesas: ' + error.message); return; }
+      if (error) {
+        setCloudStatus('error', '⚠️ Erro na nuvem');
+        return;
+      }
       state.items = data.map(fromRow);
       updateViz();
+      setCloudStatus('ok', '☁️ Salvo na nuvem');
     }
 
     function initApp() {
       updateViz();
       if (db) {
-        loadItems();
+        loadItems(true);
         db.channel('despesas-rt')
-          .on('postgres_changes', { event: '*', schema: 'public', table: 'despesas' }, () => loadItems())
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'despesas' }, () => loadItems(false))
           .subscribe();
+        // Atualiza automaticamente ao voltar para a aba/janela ou a cada 15s
+        document.addEventListener('visibilitychange', () => {
+          if (document.visibilityState === 'visible') loadItems(false);
+        });
+        window.addEventListener('focus', () => loadItems(false));
+        setInterval(() => {
+          if (document.visibilityState === 'visible') loadItems(false);
+        }, 15000);
+      } else {
+        setCloudStatus('error', '⚠️ Modo offline');
       }
     }
 
